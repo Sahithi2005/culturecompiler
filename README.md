@@ -3,7 +3,7 @@
 An agent that finds where a brand culturally fits (country → neighbourhood) and proposes evidence-backed
 localization hypotheses, using Qloo's taste graph. *We translate cultural preferences, not languages.*
 
-**Live demo:** (add your Render URL here)
+**Live demo:** https://culturecompiler.onrender.com/
 
 Architecture and code walkthrough: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Live Qloo probe findings: [docs/PROBE_FINDINGS.md](docs/PROBE_FINDINGS.md).
 

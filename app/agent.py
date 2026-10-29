@@ -32,6 +32,9 @@ LIMITATIONS = [
 ]
 
 
+TAKE = 50  # places requested per query (50 verified live); a larger pool makes brand/generic lists overlap
+
+
 class AnalysisError(RuntimeError):
     pass
 
@@ -92,36 +95,48 @@ def _resolve(run: _Run, client, seeds, role: str):
     return found, eids
 
 
-def _pick_place_tag(tags):
+def _ordered_place_tags(tags):
+    """Candidate tags for a venue category, best first: restaurant genre, then place category, then other place tags."""
+    ordered = []
     for prefix in ("urn:tag:genre:place:restaurant:", "urn:tag:category:place:", "urn:tag:genre:place:"):
-        pick = next((t for t in tags if t["id"].startswith(prefix)), None)
-        if pick:
-            return pick
-    return next((t for t in tags if ":place" in (t["id"] + t["type"]).lower()), None)
+        ordered += [t for t in tags if t["id"].startswith(prefix) and t not in ordered]
+    ordered += [t for t in tags if ":place" in (t["id"] + t["type"]).lower() and t not in ordered]
+    return ordered
 
 
-def _resolve_categories(run: _Run, client, cats: list[str]) -> list[str]:
+def _resolve_categories(run: _Run, client, cats: list[str], brand_ids, city_geo, min_results: int) -> list[str]:
+    """Look up a place tag per category AND check it really returns places in the target city.
+    (Live test: 'Fashion' resolved to a tag that matched zero places anywhere, which blanked the whole analysis.)"""
     ids = []
     for c in cats:
-        pick, seen = None, []
-        for q in (c, f"{c} store", f"{c} shop"):  # a bare word like 'Fashion' may not be a place tag
+        chosen, seen = None, []
+        for q in (c, f"{c} store", f"{c} shop"):
             try:
-                tags, call = client.tags(q, take=5)
+                tags, call = client.tags(q, take=8)
             except QlooError as e:
                 run.warnings.append(f"Could not look up place category '{q}': {e}")
                 continue
             run.log_call(call, f"resolve place category '{q}'")
             seen += [t["id"] for t in tags[:3]]
-            pick = _pick_place_tag(tags)
-            if pick:
+            for t in _ordered_place_tags(tags)[:3]:
+                try:
+                    ents, pcall = client.insights("urn:entity:place", brand_ids, geo=city_geo, take=20, tag_ids=[t["id"]])
+                except QlooError:
+                    continue
+                run.log_call(pcall, f"check tag '{t['name']}' returns places in {city_geo.query}")
+                if len(_scored(ents)) >= min_results:
+                    chosen = t
+                    break
+            if chosen:
                 break
-        if pick:
-            ids.append(pick["id"])
-            run.step("category", f"'{c}' -> {pick['name']} ({pick['id']})")
+        if chosen:
+            ids.append(chosen["id"])
+            run.step("category", f"'{c}' -> {chosen['name']} ({chosen['id']}), verified to return places")
         else:
             hint = f" Qloo suggested: {', '.join(seen[:4])}." if seen else ""
-            run.warnings.append(f"No place tag found for category '{c}'; searching all place types instead.{hint} "
-                                f"Try a more specific category such as 'clothing store', or leave it empty.")
+            run.warnings.append(f"No usable place tag for category '{c}' (none returned enough places in "
+                                f"{city_geo.query}); searching all place types instead.{hint} Try a more specific "
+                                f"category such as 'clothing store', or leave it empty.")
     return ids
 
 
@@ -144,7 +159,7 @@ def _analyze_area(run: _Run, client, brief: Brief, area, brand_ids, control_ids,
     chain = resolution_chain(area, brief.target_city)
     chosen = None
     for i, geo in enumerate(chain):
-        ents, call = client.insights("urn:entity:place", brand_ids, geo=geo, take=20, tag_ids=tag_ids or None)
+        ents, call = client.insights("urn:entity:place", brand_ids, geo=geo, take=TAKE, tag_ids=tag_ids or None)
         cid = run.log_call(call, f"{area.name}: places aligned with brand taste, {geo.describe()}")
         sc = _scored(ents)
         last = i == len(chain) - 1
@@ -163,7 +178,7 @@ def _analyze_area(run: _Run, client, brief: Brief, area, brand_ids, control_ids,
 
     baseline, overlap, paired = None, None, []
     if control_ids and sc:
-        cents, ccall = client.insights("urn:entity:place", control_ids, geo=geo, take=20, tag_ids=tag_ids or None)
+        cents, ccall = client.insights("urn:entity:place", control_ids, geo=geo, take=TAKE, tag_ids=tag_ids or None)
         ccid = run.log_call(ccall, f"{area.name}: CONTROL (generic taste), {geo.describe()}")
         call_all = _scored(cents)
         cmap = {e.id: e for e in call_all}
@@ -185,10 +200,14 @@ def _analyze_area(run: _Run, client, brief: Brief, area, brand_ids, control_ids,
     half = (len(paired) + 1) // 2
     leaning, other = (paired[:half], paired[half:]) if len(paired) >= 4 else ([], [])
 
-    capped = len(sc) >= 20
+    capped = len(sc) >= TAKE
     if capped:
-        run.step("cap", f"{area.name}: hit the 20-place cap, so only the top results are compared (narrow the "
-                        f"radius or add a category for a complete set)")
+        run.step("cap", f"{area.name}: hit the {TAKE}-place cap, so only the top results are compared (narrow the "
+                        f"radius or add a place category for a complete set)")
+        if len(paired) < max(3, brief.min_results):
+            run.warnings.append(f"{area.name}: the brand-taste and generic-taste lists share only {len(paired)} of "
+                                f"{len(sc)} places because the area has many more places than Qloo returns. Add a "
+                                f"place category (for example 'cafe') or shrink the radius so the comparison is fair.")
     n_cmp = len(paired) if control_ids else len(sc)
     coverage = min(1.0, n_cmp / brief.top_k)
     eq = round(coverage * LEVEL_FACTOR[geo.level], 3)
@@ -224,17 +243,17 @@ def analyze(brief: Brief, client, llm=None) -> dict:
         run.warnings.append("Control seeds did not resolve; areas cannot be scored against generic taste.")
         control_ents = []
     brand_ids, control_ids = [e.id for e in brand_ents], [e.id for e in control_ents]
-    tag_ids = _resolve_categories(run, client, brief.place_categories) if brief.place_categories else []
-
     city_geo = GeoSpec("query", "city", brief.target_city, query=brief.target_city)
+    tag_ids = (_resolve_categories(run, client, brief.place_categories, brand_ids, city_geo, brief.min_results)
+               if brief.place_categories else [])
     if live:  # wave 2: first-attempt probes for every area (brand + control) and the city query, concurrently
         wave = []
         for a in brief.areas:
             g0 = resolution_chain(a, brief.target_city)[0]
-            wave.append(lambda g0=g0: client.insights("urn:entity:place", brand_ids, geo=g0, take=20,
+            wave.append(lambda g0=g0: client.insights("urn:entity:place", brand_ids, geo=g0, take=TAKE,
                                                       tag_ids=tag_ids or None))
             if control_ids:
-                wave.append(lambda g0=g0: client.insights("urn:entity:place", control_ids, geo=g0, take=20,
+                wave.append(lambda g0=g0: client.insights("urn:entity:place", control_ids, geo=g0, take=TAKE,
                                                           tag_ids=tag_ids or None))
         wave.append(lambda: client.insights("urn:entity:brand", brand_ids, geo=city_geo, take=20))
         _parallel(wave)

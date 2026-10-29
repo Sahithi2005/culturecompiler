@@ -59,9 +59,62 @@ class OptionalCore(unittest.TestCase):
                 return [{"id": "urn:tag:interests:qloo:fashion", "name": "Fashion", "type": "x"}], \
                     {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
         r2 = analyze(mk(place_categories=["Fashion"]), Nothing())
-        w = [x for x in r2["warnings"] if "No place tag found" in x][0]
+        w = [x for x in r2["warnings"] if "No usable place tag" in x][0]
         self.assertIn("Qloo suggested", w)
         self.assertIn("clothing store", w)
+
+
+class LiveBugRegressions(unittest.TestCase):
+    """Bugs found by testing the deployed site on 29 Oct 2026."""
+
+    def test_category_tag_that_returns_no_places_is_rejected_and_next_candidate_used(self):
+        class ZeroTag(MockQloo):
+            def tags(self, q, take=8):
+                ts = [{"id": "urn:tag:category:place:fashion", "name": "Fashion", "type": "urn:tag:category:place"},
+                      {"id": "urn:tag:genre:place:shopping", "name": "Shopping", "type": "urn:tag:genre:place"}]
+                return ts, {"endpoint": "/v2/tags", "params": {}, "n": 2, "cached": False}
+
+            def insights(self, ft, ids, geo=None, take=20, exclude=None, explain=True, tag_ids=None):
+                if tag_ids == ["urn:tag:category:place:fashion"]:  # exists but matches no places (seen live)
+                    return [], {"endpoint": "/v2/insights", "params": {}, "n": 0, "cached": False}
+                return super().insights(ft, ids, geo, take, exclude, explain, tag_ids)
+        r = analyze(mk(place_categories=["Fashion"]), ZeroTag())
+        step = next(x for x in r["trace"] if x["step"] == "category")
+        self.assertIn("urn:tag:genre:place:shopping", step["detail"])
+        self.assertTrue(all(a["n_scored"] > 0 for a in r["areas"]))
+
+    def test_category_with_no_working_tag_falls_back_to_all_places_instead_of_empty_report(self):
+        class AllZero(MockQloo):
+            def tags(self, q, take=8):
+                return [{"id": "urn:tag:category:place:fashion", "name": "Fashion", "type": "urn:tag:category:place"}], \
+                    {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
+
+            def insights(self, ft, ids, geo=None, take=20, exclude=None, explain=True, tag_ids=None):
+                if tag_ids:
+                    return [], {"endpoint": "/v2/insights", "params": {}, "n": 0, "cached": False}
+                return super().insights(ft, ids, geo, take, exclude, explain, tag_ids)
+        r = analyze(mk(place_categories=["Fashion"]), AllZero())
+        self.assertTrue(any("No usable place tag" in w for w in r["warnings"]))
+        self.assertTrue(all(a["n_scored"] > 0 for a in r["areas"]))
+        self.assertNotEqual(r["recommendation"]["status"], "none")
+
+    def test_place_queries_request_50_and_cap_warning_fires_when_lists_do_not_overlap(self):
+        from app import agent
+        seen = []
+
+        class Disjoint(MockQloo):
+            def insights(self, ft, ids, geo=None, take=20, exclude=None, explain=True, tag_ids=None):
+                if ft != "urn:entity:place":
+                    return super().insights(ft, ids, geo, take, exclude, explain, tag_ids)
+                seen.append(take)
+                brandy = any("muji" in i for i in ids)
+                ents = [QEntity(f"{'b' if brandy else 'c'}{i}", f"P{i}", ft, .8) for i in range(agent.TAKE)]
+                return ents, {"endpoint": "/v2/insights", "params": {}, "n": len(ents), "cached": False}
+        r = analyze(mk(place_categories=[]), Disjoint())
+        self.assertEqual(set(seen), {50})
+        self.assertTrue(all(a["pool_capped"] and a["n_paired"] == 0 for a in r["areas"]))
+        self.assertTrue(any("share only 0" in w for w in r["warnings"]))
+        self.assertEqual(r["recommendation"]["status"], "none")
 
 
 class Geo(unittest.TestCase):
@@ -352,7 +405,7 @@ class CategoriesAndTags(unittest.TestCase):
             def tags(self, q, take=5):
                 return [], {"endpoint": "/v2/tags", "params": {}, "n": 0, "cached": False}
         r = analyze(mk(place_categories=["cafe"]), NoTags())
-        self.assertTrue(any("No place tag found" in w for w in r["warnings"]))
+        self.assertTrue(any("No usable place tag" in w for w in r["warnings"]))
         self.assertEqual(len(r["areas"]), 3)
 
     def test_tags_endpoint_uses_header_and_path(self):

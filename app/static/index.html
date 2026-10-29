@@ -97,12 +97,20 @@ function render(d){
   const ord=d.ranking.order;let h="";
   if(d.synthetic)h+=`<div class="banner mock">Synthetic data. Illustrates the pipeline only.</div>`;
   h+=d.warnings.map(w=>`<div class="warn">${esc(w)}</div>`).join("")+d.ranking.notes.map(w=>`<div class="warn">${esc(w)}</div>`).join("");
+  if(d.recommendation){const r=d.recommendation;
+    const title=r.status==="clear"?"Best area on the taste evidence":r.status==="tentative"?"Suggested pilot area (tie-break, not a statistical win)":"No recommendation";
+    const col=r.status==="none"?"var(--amber)":"var(--cyan)";
+    h+=`<h2>Recommendation</h2><div class="card" style="border-color:${col}"><div class="kind" style="color:${col}">${esc(title)}</div>
+      ${r.area?`<div style="font-size:28px;font-weight:700;letter-spacing:-.5px;margin:4px 0 8px">${esc(r.area)}</div>`:""}
+      <ul style="margin:0 0 8px 18px;padding:0">${r.reasons.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+      ${r.peers.length?`<div style="margin:6px 0"><b>Study these peer places first:</b> ${r.peers.map(esc).join(" · ")}</div>`:""}
+      ${r.caveats.map(x=>`<div class="muted" style="font-size:13px;margin-top:4px">${esc(x)}</div>`).join("")}</div>`;}
   h+=`<h2>1 · Where does the brand culturally fit?</h2><div class="card"><table><thead><tr><th>#</th><th>Area</th><th>Resolution</th><th>Brand vs generic taste (paired lift ± SE)</th><th>Places compared</th><th>Evidence</th><th>Wins in re-weighting</th></tr></thead><tbody>`;
   d.areas.forEach(a=>{h+=`<tr><td>${a.rank==null?"—":a.rank+(a.tied?"=":"")}</td>
    <td><b>${esc(a.name)}</b><div class="muted" style="font-size:12px">${a.top_places.slice(0,4).map(p=>esc(p.name)).join(" · ")}</div></td>
    <td>${esc(a.resolution.description)}<br><span class="muted">${a.n_scored} scored places</span></td>
    <td><b>${a.lift==null?"—":(a.lift>=0?"+":"")+f(a.lift,3)}</b>${a.lift_se==null?"":' <span class="muted">± '+f(a.lift_se,3)+'</span>'}</td>
-   <td>${a.n_paired}${a.pool_capped?' <span class="muted">(top-20 cap)</span>':""}</td>
+   <td>${a.n_paired}${a.pool_capped?' <span class="muted">(capped)</span>':""}</td>
    <td><span class="pill ${a.confidence}">${a.confidence}</span><div class="bar" style="margin-top:6px"><i style="width:${a.evidence_quality*100}%"></i></div></td>
    <td>${a.tied?"tie":a.win_share==null?"—":Math.round(a.win_share*100)+"%"}</td></tr>`});
   h+=`</tbody></table><p class="muted" style="font-size:13px"><b>Paired lift</b> = for every place, how much higher your brand's taste scores it than generic mainstream taste does, averaged over the area's places (± is the standard error). Qloo's raw affinity level is nearly flat across areas, so only this paired difference is used. Areas whose lifts differ by less than 2 standard errors are shown as a tie. This is a cultural signal, not a demand or profit forecast.</p></div>`;

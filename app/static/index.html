@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CultureCompiler</title>
+<style>
+:root{--bg:#0b1220;--panel:#121c2e;--line:#2a3f5a;--text:#ecf3ff;--muted:#9fb2c8;--cyan:#71e3d0;--amber:#ffd28b;--red:#ff9b9b;--blue:#8fb0ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:auto;padding:24px}
+h1{font-size:34px;letter-spacing:-1px;margin:6px 0}h1 span{color:var(--cyan)}h2{font-size:20px;margin:30px 0 10px}
+.muted{color:var(--muted)}.banner{padding:10px 14px;border-radius:10px;margin:14px 0;font-size:14px}
+.banner.mock{background:#3b2f1e;border:1px solid #7a5b2b;color:var(--amber)}.banner.live{background:#12342f;border:1px solid #2c7a6c;color:var(--cyan)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin:12px 0}
+label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+input,textarea{width:100%;background:#0d1626;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px;font:inherit}
+textarea{min-height:92px}.row{display:grid;gap:10px}.r2{grid-template-columns:1fr 1fr}.r6{grid-template-columns:1.4fr 1fr 1fr .8fr .9fr .9fr}
+button{background:var(--cyan);color:#06211d;border:0;border-radius:10px;padding:12px 20px;font-weight:700;font-size:15px;cursor:pointer}
+button.ghost{background:transparent;color:var(--cyan);border:1px solid var(--cyan);padding:7px 12px;font-size:13px}
+button:disabled{opacity:.5;cursor:wait}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--cyan)}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:700}
+.high{background:#12342f;color:var(--cyan)}.medium{background:#3b2f1e;color:var(--amber)}.low{background:#3a1f25;color:var(--red)}
+.bar{height:8px;background:#1d2b42;border-radius:6px;overflow:hidden;min-width:90px}.bar i{display:block;height:100%;background:var(--cyan)}
+.warn{border-left:3px solid var(--amber);padding:8px 12px;background:#2b2418;color:#ead6ba;margin:6px 0;border-radius:0 8px 8px 0;font-size:14px}
+.err{border-left:3px solid var(--red);padding:10px 14px;background:#2d1b20;color:#ffd3d3;border-radius:0 8px 8px 0}
+.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin:2px 3px 0 0;color:var(--blue);cursor:pointer;background:#0d1626}
+.kind{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--cyan)}
+details summary{cursor:pointer;color:var(--muted)}pre{white-space:pre-wrap;word-break:break-word;font-size:12px;background:#0d1626;padding:10px;border-radius:8px;border:1px solid var(--line)}
+.trace div{font-size:13px;color:var(--muted);padding:2px 0}.trace b{color:var(--text);display:inline-block;min-width:96px}
+@media(max-width:800px){.r2,.r6{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">
+<h1>Culture<span>Compiler</span></h1>
+<div class="muted">We don't translate languages. We translate cultural preferences.</div>
+<div id="mode" class="banner">checking data mode…</div>
+
+<div class="card">
+  <div class="row r2">
+    <div><label>Brand</label><input id="brand"></div>
+    <div><label>Home market</label><input id="home"></div>
+  </div>
+  <label>Core identity (comma separated: what must NOT change)</label><input id="core">
+  <label>Brand taste seeds (one per line: <code>name | type</code>, types: brand, movie, artist, person, book, podcast, tv_show)</label>
+  <textarea id="seeds"></textarea>
+  <label>Target city</label><input id="city">
+  <label>Place categories (optional, comma separated, e.g. <code>cafe</code>): restricts compared places to this kind of venue. Leave empty to include all place types</label><input id="cats">
+  <label>Areas to compare (name, latitude, longitude, radius in metres) + optional operational scores 0–1 that <b>you</b> supply</label>
+  <div id="areas"></div>
+  <p style="margin:14px 0 0"><button id="run">Analyze expansion opportunities →</button>
+  <span id="status" class="muted" style="margin-left:12px"></span></p>
+</div>
+<div id="out"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const f=(x,d=2)=>x==null?"—":Number(x).toFixed(d);
+let EVIDENCE={}, CALLS={}, MIN=8;
+
+function areaRow(a={}){
+  const d=document.createElement("div");d.className="row r6";d.style.marginBottom="6px";
+  d.innerHTML=`<input placeholder="name" value="${esc(a.name||"")}"><input placeholder="lat" value="${esc(a.lat??"")}">
+  <input placeholder="lon" value="${esc(a.lon??"")}"><input placeholder="radius m" value="${esc(a.radius_m??1000)}">
+  <input placeholder="rent ok 0-1" value="${esc(a.rent??"")}"><input placeholder="footfall 0-1" value="${esc(a.foot??"")}">`;
+  $("areas").appendChild(d);
+}
+async function init(){
+  const [h,ex]=await Promise.all([fetch("/api/health").then(r=>r.json()),fetch("/api/example").then(r=>r.json())]);
+  $("mode").className="banner "+h.mode;
+  $("mode").textContent=h.mode==="live"?"Live mode: results come from the Qloo API."
+    :"SYNTHETIC DATA: no Qloo key is configured, so every place and score below is invented to demo the pipeline. Do not read them as facts about any city.";
+  $("brand").value=ex.brand;$("home").value=ex.home_market;$("core").value=ex.core_identity.join(", ");
+  $("seeds").value=ex.seeds.map(s=>`${s.name} | ${s.type}`).join("\n");$("city").value=ex.target_city;$("cats").value=(ex.place_categories||[]).join(", ");MIN=ex.min_results||8;
+  ex.areas.forEach(areaRow);
+}
+function brief(){
+  const seeds=$("seeds").value.split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{const [n,t]=l.split("|").map(x=>x.trim());return {name:n,type:t||"brand"}});
+  const areas=[],operational={};
+  [...$("areas").children].forEach(r=>{const i=r.querySelectorAll("input");if(!i[0].value.trim())return;
+    areas.push({name:i[0].value.trim(),lat:parseFloat(i[1].value),lon:parseFloat(i[2].value),radius_m:parseInt(i[3].value||"1000")});
+    const o={};if(i[4].value!=="")o.rent_affordability=parseFloat(i[4].value);if(i[5].value!=="")o.footfall=parseFloat(i[5].value);
+    if(Object.keys(o).length)operational[i[0].value.trim()]=o;});
+  return {brand:$("brand").value,home_market:$("home").value,core_identity:$("core").value.split(",").map(s=>s.trim()).filter(Boolean),
+    seeds,target_city:$("city").value,areas,operational,
+    min_results:MIN,place_categories:$("cats").value.split(",").map(s=>s.trim()).filter(Boolean)};
+}
+$("run").onclick=async()=>{
+  $("run").disabled=true;$("status").textContent="Agent is investigating…";$("out").innerHTML="";
+  try{
+    const r=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(brief())});
+    const d=await r.json();
+    if(!r.ok){$("out").innerHTML=`<div class="err">${esc(d.error||"Something went wrong")}</div>`;return}
+    render(d);
+  }catch(e){$("out").innerHTML=`<div class="err">Network error: ${esc(e.message)}</div>`}
+  finally{$("run").disabled=false;$("status").textContent=""}
+};
+function render(d){
+  EVIDENCE=d.evidence;CALLS=d.calls;
+  const ord=d.ranking.order;let h="";
+  if(d.synthetic)h+=`<div class="banner mock">Synthetic data. Illustrates the pipeline only.</div>`;
+  h+=d.warnings.map(w=>`<div class="warn">${esc(w)}</div>`).join("")+d.ranking.notes.map(w=>`<div class="warn">${esc(w)}</div>`).join("");
+  h+=`<h2>1 · Where does the brand culturally fit?</h2><div class="card"><table><thead><tr><th>#</th><th>Area</th><th>Resolution</th><th>Brand vs generic taste (paired lift ± SE)</th><th>Places compared</th><th>Evidence</th><th>Wins in re-weighting</th></tr></thead><tbody>`;
+  d.areas.forEach(a=>{h+=`<tr><td>${a.rank==null?"—":a.rank+(a.tied?"=":"")}</td>
+   <td><b>${esc(a.name)}</b><div class="muted" style="font-size:12px">${a.top_places.slice(0,4).map(p=>esc(p.name)).join(" · ")}</div></td>
+   <td>${esc(a.resolution.description)}<br><span class="muted">${a.n_scored} scored places</span></td>
+   <td><b>${a.lift==null?"—":(a.lift>=0?"+":"")+f(a.lift,3)}</b>${a.lift_se==null?"":' <span class="muted">± '+f(a.lift_se,3)+'</span>'}</td>
+   <td>${a.n_paired}${a.pool_capped?' <span class="muted">(top-20 cap)</span>':""}</td>
+   <td><span class="pill ${a.confidence}">${a.confidence}</span><div class="bar" style="margin-top:6px"><i style="width:${a.evidence_quality*100}%"></i></div></td>
+   <td>${a.tied?"tie":a.win_share==null?"—":Math.round(a.win_share*100)+"%"}</td></tr>`});
+  h+=`</tbody></table><p class="muted" style="font-size:13px"><b>Paired lift</b> = for every place, how much higher your brand's taste scores it than generic mainstream taste does, averaged over the area's places (± is the standard error). Qloo's raw affinity level is nearly flat across areas, so only this paired difference is used. Areas whose lifts differ by less than 2 standard errors are shown as a tie. This is a cultural signal, not a demand or profit forecast.</p></div>`;
+  h+=`<h2>2 · Localization hypotheses (each tied to evidence)</h2>`;
+  d.hypotheses.forEach(x=>{h+=`<div class="card"><div class="kind">${esc(x.kind.replace("_"," "))} · ${esc(x.scope)} · ${esc(x.id)}</div>
+    <div>${esc(x.statement)}${x.reworded_by_llm?' <span class="muted">(wording polished by LLM, verified)</span>':""}</div>
+    <div class="muted" style="font-size:13px;margin-top:6px">Test: ${esc(x.validation_test)}</div>
+    <div>${x.evidence.map(e=>`<span class="chip" data-e="${esc(e)}">${esc(e.length>26?e.slice(0,24)+"…":e)}</span>`).join("")}</div></div>`});
+  if(d.rejected.length)h+=`<div class="warn">${d.rejected.length} generated claim(s) were rejected by the verifier and are not shown.</div>`;
+  h+=`<h2>3 · How the agent worked</h2><div class="card trace">${d.trace.map(t=>`<div><b>${esc(t.step)}</b> ${esc(t.detail)}</div>`).join("")}
+    <p class="muted" style="font-size:13px">${Object.keys(d.calls).length} API calls · ${d.elapsed_s}s</p></div>`;
+  h+=`<h2>4 · Limits you should know</h2><div class="card"><ul>${d.limitations.map(l=>`<li>${esc(l)}</li>`).join("")}</ul></div>`;
+  h+=`<details class="card"><summary>Raw evidence log</summary><pre id="raw"></pre></details>`;
+  $("out").innerHTML=h;$("raw").textContent=JSON.stringify({calls:d.calls,evidence:d.evidence},null,1);
+  document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{const e=EVIDENCE[c.dataset.e]||CALLS[c.dataset.e];alert(JSON.stringify(e,null,1))});
+}
+init();
+</script></div></body></html>

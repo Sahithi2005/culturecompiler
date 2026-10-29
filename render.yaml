@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: culturecompiler
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: QLOO_API_KEY
+        sync: false

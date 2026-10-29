@@ -24,9 +24,15 @@ def _evidence_text(a: dict) -> str:
 def recommend(areas: list[dict]) -> dict:
     scored = [a for a in areas if a.get("rank") is not None]
     if not scored:
-        return {"status": "none", "area": None, "tied": [], "reasons": [],
-                "caveats": ["No area could be compared against generic taste (too few places, or only city-level "
-                            "data). Widen the radius, change the place category, or add more taste seeds."],
+        city_level = [a["name"] for a in areas if a.get("resolution", {}).get("level") == "city"]
+        if city_level and len(city_level) == len(areas):
+            msg = ("Every area fell back to city-level data, so the areas cannot be told apart. This category is too "
+                   "sparse for neighbourhood comparison: use a larger radius (3000-5000 m), a broader category "
+                   "(for example 'clothing store' or 'shopping'), or leave the category empty.")
+        else:
+            msg = ("No area could be compared against generic taste (too few places in common). Widen the radius, "
+                   "change the place category, or add more taste seeds.")
+        return {"status": "none", "area": None, "tied": [], "reasons": [], "caveats": [msg],
                 "peers": [], "runner_up": None}
     top = [a for a in scored if a["rank"] == 1]
     others = [a for a in scored if a["rank"] != 1]

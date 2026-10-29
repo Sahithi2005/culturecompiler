@@ -83,6 +83,34 @@ class LiveBugRegressions(unittest.TestCase):
         self.assertIn("urn:tag:genre:place:shopping", step["detail"])
         self.assertTrue(all(a["n_scored"] > 0 for a in r["areas"]))
 
+    def test_broadest_working_tag_is_chosen_not_the_first(self):
+        class Sized(MockQloo):
+            def tags(self, q, take=8):
+                ts = [{"id": "urn:tag:category:place:narrow", "name": "Narrow", "type": "urn:tag:category:place"},
+                      {"id": "urn:tag:genre:place:shopping", "name": "Shopping", "type": "urn:tag:genre:place"}]
+                return ts, {"endpoint": "/v2/tags", "params": {}, "n": 2, "cached": False}
+
+            def insights(self, ft, ids, geo=None, take=20, exclude=None, explain=True, tag_ids=None):
+                ents, call = super().insights(ft, ids, geo, take, exclude, explain, tag_ids)
+                if tag_ids == ["urn:tag:category:place:narrow"] and geo is not None and geo.kind == "query":
+                    ents = ents[:6]  # valid (>= min_results) but narrow
+                return ents, call
+        r = analyze(mk(place_categories=["Shoes"]), Sized())
+        step = next(x for x in r["trace"] if x["step"] == "category")
+        self.assertIn("urn:tag:genre:place:shopping", step["detail"])
+
+    def test_narrow_category_warns_that_comparisons_will_be_thin(self):
+        class OnlyNarrow(MockQloo):
+            def tags(self, q, take=8):
+                return [{"id": "urn:tag:category:place:narrow", "name": "Narrow", "type": "urn:tag:category:place"}], \
+                    {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
+
+            def insights(self, ft, ids, geo=None, take=20, exclude=None, explain=True, tag_ids=None):
+                ents, call = super().insights(ft, ids, geo, take, exclude, explain, tag_ids)
+                return (ents[:8] if tag_ids and geo is not None and geo.kind == "query" else ents), call
+        r = analyze(mk(place_categories=["Fashion"]), OnlyNarrow())
+        self.assertTrue(any("will be thin" in w for w in r["warnings"]))
+
     def test_category_with_no_working_tag_falls_back_to_all_places_instead_of_empty_report(self):
         class AllZero(MockQloo):
             def tags(self, q, take=8):
@@ -115,6 +143,13 @@ class LiveBugRegressions(unittest.TestCase):
         self.assertTrue(all(a["pool_capped"] and a["n_paired"] == 0 for a in r["areas"]))
         self.assertTrue(any("share only 0" in w for w in r["warnings"]))
         self.assertEqual(r["recommendation"]["status"], "none")
+
+    def test_all_city_level_gives_actionable_no_recommendation_message(self):
+        from app.recommend import recommend
+        areas = [{"name": n, "rank": None, "resolution": {"level": "city"}} for n in ("A", "B")]
+        msg = recommend(areas)["caveats"][0]
+        self.assertIn("larger radius", msg)
+        self.assertIn("broader category", msg)
 
 
 class Geo(unittest.TestCase):

@@ -105,12 +105,15 @@ def _ordered_place_tags(tags):
 
 
 def _resolve_categories(run: _Run, client, cats: list[str], brand_ids, city_geo, min_results: int) -> list[str]:
-    """Look up a place tag per category AND check it really returns places in the target city.
-    (Live test: 'Fashion' resolved to a tag that matched zero places anywhere, which blanked the whole analysis.)"""
+    """Look up place tags per category, check each really returns places in the target city, and pick the BROADEST
+    working one (most places city-wide). Live findings: 'Fashion' resolved to a tag matching zero places, and then to
+    one matching only 8 places in all of Hyderabad, too few for neighbourhood comparison."""
     ids = []
     for c in cats:
-        chosen, seen = None, []
+        best, best_n, seen, tried = None, 0, [], set()
         for q in (c, f"{c} store", f"{c} shop"):
+            if best_n >= 20:
+                break
             try:
                 tags, call = client.tags(q, take=8)
             except QlooError as e:
@@ -119,19 +122,27 @@ def _resolve_categories(run: _Run, client, cats: list[str], brand_ids, city_geo,
             run.log_call(call, f"resolve place category '{q}'")
             seen += [t["id"] for t in tags[:3]]
             for t in _ordered_place_tags(tags)[:3]:
+                if t["id"] in tried:
+                    continue
+                tried.add(t["id"])
                 try:
-                    ents, pcall = client.insights("urn:entity:place", brand_ids, geo=city_geo, take=20, tag_ids=[t["id"]])
+                    ents, pcall = client.insights("urn:entity:place", brand_ids, geo=city_geo, take=20,
+                                                  tag_ids=[t["id"]])
                 except QlooError:
                     continue
+                n = len(_scored(ents))
                 run.log_call(pcall, f"check tag '{t['name']}' returns places in {city_geo.query}")
-                if len(_scored(ents)) >= min_results:
-                    chosen = t
+                if n >= min_results and n > best_n:
+                    best, best_n = t, n
+                if best_n >= 20:
                     break
-            if chosen:
-                break
-        if chosen:
-            ids.append(chosen["id"])
-            run.step("category", f"'{c}' -> {chosen['name']} ({chosen['id']}), verified to return places")
+        if best:
+            ids.append(best["id"])
+            run.step("category", f"'{c}' -> {best['name']} ({best['id']}), {best_n} places city-wide")
+            if best_n < 15:
+                run.warnings.append(f"Category '{c}' only has about {best_n} places in {city_geo.query}, so "
+                                    f"neighbourhood comparisons will be thin. A broader category (for example "
+                                    f"'clothing store' or 'shopping') or a larger radius gives more data.")
         else:
             hint = f" Qloo suggested: {', '.join(seen[:4])}." if seen else ""
             run.warnings.append(f"No usable place tag for category '{c}' (none returned enough places in "

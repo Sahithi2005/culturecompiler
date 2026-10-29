@@ -21,6 +21,49 @@ def mk(**over):
     return Brief.from_dict(d)
 
 
+class OptionalCore(unittest.TestCase):
+    def test_empty_core_identity_is_allowed_and_runs(self):
+        b = mk(core_identity=[])
+        self.assertEqual(b.core_identity, [])
+        r = analyze(b, MockQloo())
+        pres = [h for h in r["hypotheses"] if h["kind"] == "preserve"][0]
+        self.assertIn("what makes Hikari distinctive", pres["statement"])
+        self.assertEqual(r["rejected"], [])
+
+    def test_uniqlo_style_brief_with_eight_mixed_seed_types_validates(self):
+        seeds = [("Muji", "brand"), ("Margaret Howell", "brand"), ("Jil Sander", "brand"), ("Dieter Rams", "person"),
+                 ("Christophe Lemaire", "person"), ("The Design of Everyday Things", "book"),
+                 ("Abstract: The Art of Design", "tv_show"), ("Mono & Stereo", "podcast")]
+        b = mk(brand="Uniqlo", core_identity=[], place_categories=["Fashion"],
+               seeds=[{"name": n, "type": t} for n, t in seeds])
+        self.assertEqual(len(b.seeds), 8)
+        r = analyze(b, MockQloo())
+        self.assertEqual(len(r["areas"]), 3)
+
+    def test_category_lookup_tries_variants_and_explains_failure(self):
+        class Variant(MockQloo):
+            def tags(self, q, take=5):
+                if q == "Fashion":
+                    return [{"id": "urn:tag:interests:qloo:fashion", "name": "Fashion", "type": "urn:tag:interests:qloo"}], \
+                        {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
+                if q == "Fashion store":
+                    return [{"id": "urn:tag:category:place:clothing_store", "name": "Clothing store",
+                             "type": "urn:tag:category:place"}], {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
+                return [], {"endpoint": "/v2/tags", "params": {}, "n": 0, "cached": False}
+        r = analyze(mk(place_categories=["Fashion"]), Variant())
+        step = next(x for x in r["trace"] if x["step"] == "category")
+        self.assertIn("urn:tag:category:place:clothing_store", step["detail"])
+
+        class Nothing(MockQloo):
+            def tags(self, q, take=5):
+                return [{"id": "urn:tag:interests:qloo:fashion", "name": "Fashion", "type": "x"}], \
+                    {"endpoint": "/v2/tags", "params": {}, "n": 1, "cached": False}
+        r2 = analyze(mk(place_categories=["Fashion"]), Nothing())
+        w = [x for x in r2["warnings"] if "No place tag found" in x][0]
+        self.assertIn("Qloo suggested", w)
+        self.assertIn("clothing store", w)
+
+
 class Geo(unittest.TestCase):
     def test_chain_widens_then_city(self):
         c = resolution_chain(Area("X", 17.4, 78.4, 2000), "Hyderabad")
@@ -48,7 +91,7 @@ class Models(unittest.TestCase):
         self.assertEqual(len(mk().areas), 3)
 
     def test_rejects_bad_input(self):
-        for bad in [{"seeds": [{"name": "Muji"}]}, {"areas": []}, {"core_identity": []},
+        for bad in [{"seeds": [{"name": "Muji"}]}, {"areas": []}, {"core_identity": "matcha"},
                     {"areas": [{"name": "A", "lat": 99, "lon": 0}]},
                     {"seeds": [{"name": "x", "type": "a&b=c"}, {"name": "y"}]},
                     {"operational": {"A": {"rent": 3}}}]:
@@ -149,6 +192,41 @@ class Ranker(unittest.TestCase):
     def test_area_without_lift_is_not_scored(self):
         r = rank_areas([self.area("A", .08, 1.0), self.area("B", None, 1.0)], {})
         self.assertEqual(r["order"], ["A"])
+
+
+class Recommend(unittest.TestCase):
+    def a(self, name, rank, lift=.02, se=.01, eq=1.0, pos=.6, n=10, level="neighborhood", conf="high", peers=()):
+        return {"name": name, "rank": rank, "lift": lift, "lift_se": se, "evidence_quality": eq, "positive_share": pos,
+                "n_paired": n, "confidence": conf,
+                "resolution": {"level": level, "description": f"{level} (1 km circle)"},
+                "peers": [{"name": p, "diff": d} for p, d in peers]}
+
+    def test_clear_winner(self):
+        from app.recommend import recommend
+        r = recommend([self.a("A", 1, lift=.08, peers=[("P1", .05), ("P2", -.01)]), self.a("B", 2, lift=-.02)])
+        self.assertEqual((r["status"], r["area"], r["runner_up"], r["tied"]), ("clear", "A", "B", []))
+        self.assertEqual(r["peers"], ["P1"])  # only places where brand taste beats generic
+        self.assertTrue(any("Ahead of B" in x for x in r["reasons"]))
+
+    def test_tie_is_tentative_and_tiebreak_prefers_evidence_then_positive_share_then_lift(self):
+        from app.recommend import recommend
+        areas = [self.a("A", 1, eq=.7, pos=.9, lift=.05), self.a("B", 1, eq=1.0, pos=.5, lift=.00),
+                 self.a("C", 1, eq=1.0, pos=.6, lift=-.01)]
+        r = recommend(areas)
+        self.assertEqual((r["status"], r["area"]), ("tentative", "C"))  # eq tie B/C -> higher positive share
+        self.assertEqual(sorted(r["tied"]), ["A", "B", "C"])
+        self.assertTrue(any("tie-break, not a statistical win" in x for x in r["caveats"]))
+
+    def test_nothing_scorable_and_single_area(self):
+        from app.recommend import recommend
+        self.assertEqual(recommend([self.a("A", None)])["status"], "none")
+        r = recommend([self.a("A", 1), self.a("B", None)])
+        self.assertEqual((r["status"], r["area"]), ("tentative", "A"))
+
+    def test_report_contains_recommendation_for_mock_run(self):
+        r = analyze(mk(), MockQloo())
+        self.assertIn(r["recommendation"]["status"], ("clear", "tentative"))
+        self.assertIn(r["recommendation"]["area"], [a["name"] for a in r["areas"]])
 
 
 class Verifier(unittest.TestCase):

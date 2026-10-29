@@ -67,8 +67,9 @@ def build_hypotheses(brief: Brief, areas: list[dict], evidence: dict, seed_eids:
 
     if seed_eids:
         names = ", ".join(evidence[e]["name"] for e in seed_eids)
+        anchor = ", ".join(brief.core_identity) if brief.core_identity else f"what makes {brief.brand} distinctive"
         add("preserve", "brand",
-            f"Keep {', '.join(brief.core_identity)} as the anchor of the concept; the taste seeds "
+            f"Keep {anchor} as the anchor of the concept; the taste seeds "
             f"({names}) are the basis of every comparison here.", seed_eids,
             test="Ask 10 target customers which of these elements they would miss most if removed.")
 

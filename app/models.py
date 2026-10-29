@@ -75,9 +75,10 @@ class Brief:
                 out.append(Seed(str(item["name"]).strip()[:80], t))
             return out
 
-        core = d.get("core_identity")
-        if not isinstance(core, list) or not core or not all(isinstance(c, str) and c.strip() for c in core):
-            raise BriefError("'core_identity' must be a non-empty list of short phrases.")
+        core = d.get("core_identity") or []  # optional: what must NOT change about the brand
+        if not isinstance(core, list) or not all(isinstance(c, str) for c in core):
+            raise BriefError("'core_identity' must be a list of short phrases (it may be empty).")
+        core = [c.strip()[:60] for c in core if c.strip()][:8]
 
         areas_raw = d.get("areas")
         if not isinstance(areas_raw, list) or not (1 <= len(areas_raw) <= 6):
@@ -114,7 +115,7 @@ class Brief:
 
         brief = cls(
             brand=s("brand"), home_market=s("home_market"),
-            core_identity=[c.strip()[:60] for c in core][:8],
+            core_identity=core,
             seeds=seeds("seeds", 2, 8, True), target_city=s("target_city"), areas=areas,
             control_seeds=seeds("control_seeds", 2, 6, False) or list(DEFAULT_CONTROL),
             place_categories=[str(c).strip()[:40] for c in (d.get("place_categories") or []) if str(c).strip()][:3],

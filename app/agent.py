@@ -15,6 +15,7 @@ from .localize import build_hypotheses, maybe_rewrite
 from .models import Brief
 from .qloo import QlooError
 from .ranker import rank_areas
+from .recommend import recommend
 from .verify import verify_hypotheses
 
 LIMITATIONS = [
@@ -91,26 +92,36 @@ def _resolve(run: _Run, client, seeds, role: str):
     return found, eids
 
 
+def _pick_place_tag(tags):
+    for prefix in ("urn:tag:genre:place:restaurant:", "urn:tag:category:place:", "urn:tag:genre:place:"):
+        pick = next((t for t in tags if t["id"].startswith(prefix)), None)
+        if pick:
+            return pick
+    return next((t for t in tags if ":place" in (t["id"] + t["type"]).lower()), None)
+
+
 def _resolve_categories(run: _Run, client, cats: list[str]) -> list[str]:
     ids = []
     for c in cats:
-        try:
-            tags, call = client.tags(c, take=5)
-        except QlooError as e:
-            run.warnings.append(f"Could not look up place category '{c}': {e}")
-            continue
-        run.log_call(call, f"resolve place category '{c}'")
-        pick = None
-        for prefix in ("urn:tag:genre:place:restaurant:", "urn:tag:category:place:", "urn:tag:genre:place:"):
-            pick = next((t for t in tags if t["id"].startswith(prefix)), None)
+        pick, seen = None, []
+        for q in (c, f"{c} store", f"{c} shop"):  # a bare word like 'Fashion' may not be a place tag
+            try:
+                tags, call = client.tags(q, take=5)
+            except QlooError as e:
+                run.warnings.append(f"Could not look up place category '{q}': {e}")
+                continue
+            run.log_call(call, f"resolve place category '{q}'")
+            seen += [t["id"] for t in tags[:3]]
+            pick = _pick_place_tag(tags)
             if pick:
                 break
-        pick = pick or next((t for t in tags if ":place" in (t["id"] + t["type"]).lower()), None)
         if pick:
             ids.append(pick["id"])
             run.step("category", f"'{c}' -> {pick['name']} ({pick['id']})")
         else:
-            run.warnings.append(f"No place tag found for category '{c}'; searching all place types instead.")
+            hint = f" Qloo suggested: {', '.join(seen[:4])}." if seen else ""
+            run.warnings.append(f"No place tag found for category '{c}'; searching all place types instead.{hint} "
+                                f"Try a more specific category such as 'clothing store', or leave it empty.")
     return ids
 
 
@@ -169,6 +180,7 @@ def _analyze_area(run: _Run, client, brief: Brief, area, brand_ids, control_ids,
                                "brand": e.affinity, "control": c.affinity, "diff": e.affinity - c.affinity,
                                "tags": e.tags})
     lift, lift_se = _paired_stats([p["diff"] for p in paired])
+    positive_share = (sum(1 for p in paired if p["diff"] > 0) / len(paired)) if paired else None
     paired.sort(key=lambda p: -p["diff"])
     half = (len(paired) + 1) // 2
     leaning, other = (paired[:half], paired[half:]) if len(paired) >= 4 else ([], [])
@@ -186,6 +198,7 @@ def _analyze_area(run: _Run, client, brief: Brief, area, brand_ids, control_ids,
                                           "radius_m": geo.radius_m},
         "comparable": geo.level != "city", "n_scored": len(sc), "n_paired": len(paired), "pool_capped": capped,
         "fit": _r(fit), "baseline": _r(baseline), "lift": _r(lift), "lift_se": _r(lift_se),
+        "positive_share": _r(positive_share),
         "overlap_with_generic": _r(overlap), "evidence_quality": eq, "confidence": confidence,
         "top_places": top_places, "peers": paired[:3], "leaning": leaning, "other": other, "call": cid,
     }, {e.id for e in sc[:brief.top_k]}
@@ -259,6 +272,8 @@ def analyze(brief: Brief, client, llm=None) -> dict:
     run.step("rank", f"Order: {', '.join(ranking['order']) or 'none comparable'}"
                      + (f" (ties: {', '.join(ranking['tied'])})" if tied else ""))
 
+    recommendation = recommend(areas)
+    run.step("recommend", f"{recommendation['status']}: {recommendation['area'] or 'no area'}")
     hyps = build_hypotheses(brief, areas, run.evidence, seed_eids, city_eids,
                             {a["name"]: a["call"] for a in areas})
     verified, rejected = verify_hypotheses(hyps, run.evidence, run.calls)
@@ -272,7 +287,7 @@ def analyze(brief: Brief, client, llm=None) -> dict:
         "brief": {"brand": brief.brand, "home_market": brief.home_market, "target_city": brief.target_city,
                   "core_identity": brief.core_identity, "place_categories": brief.place_categories},
         "mode": client.mode, "synthetic": client.mode == "mock",
-        "areas": areas, "ranking": ranking, "hypotheses": verified, "rejected": rejected,
+        "areas": areas, "ranking": ranking, "recommendation": recommendation, "hypotheses": verified, "rejected": rejected,
         "trace": run.trace, "warnings": run.warnings, "calls": run.calls, "evidence": run.evidence,
         "limitations": LIMITATIONS, "elapsed_s": round(time.time() - t0, 2),
     }

@@ -93,6 +93,8 @@ incomparable areas, abort if fewer than 2 seeds resolve), visible in `trace`. Th
   `taste_signal` (menu / ambience / price tags over-indexing among those places; amenity, service, age and neighbourhood tags
   ignored; hotel / payment / accessibility names denied), `caution` and `channel_signal` (city-level brands to verify).
   Includes an optional wording hook that is disabled by default.
+- **app/recommend.py**: turns the ranking into a decision: a clear best area, or (when areas tie) a labelled tie-break pick
+  using evidence quality, share of places where brand taste beats generic taste, then lift. Never presents a tie as a win.
 - **app/verify.py**: the claim verifier.
 - **app/server.py**: standard-library HTTP server; routes `GET /`, `/api/health`, `/api/example`, `POST /api/analyze`;
   100 KB body cap, 2 concurrent analyses, 10 analyses per IP per 10 minutes, errors mapped to 400/413/422/429/502/500
